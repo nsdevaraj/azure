@@ -184,28 +184,21 @@ export default function AzureDevOpsBugTracker() {
 
   const fetchTeamMembers = async () => {
     try {
-      // First get the team members directly from the organization level
-      const response = await fetch(`https://dev.azure.com/${organization}/_apis/projects/${project}/teams?api-version=6.0`, {
-        headers: {
-          'Authorization': `Basic ${btoa(`:${pat}`)}`,
-        },
-      })
-      if (!response.ok) throw new Error('Failed to fetch team members')
-      const data = await response.json()
-
-      // Get all team members from the default team
-      const membersResponse = await fetch(`https://dev.azure.com/${organization}/_apis/projects/${project}/teams/default/members?api-version=6.0`, {
-        headers: {
-          'Authorization': `Basic ${btoa(`:${pat}`)}`,
-        },
-      })
-      if (!membersResponse.ok) throw new Error('Failed to fetch team members')
-      const membersData = await membersResponse.json()
-      setTeamMembers(membersData.value.map((member: any) => member.identity.displayName))
-    } catch (err) {
-      console.error('Error fetching team members:', err)
-      setError('Failed to fetch team members. Please check your Azure DevOps configuration and permissions.')
-      setTeamMembers(['Unassigned']) // Fallback with at least unassigned option
+      const response = await fetch('/api/azure-devops/team-members');
+      const data = await response.json();
+      
+      if (!response.ok || data.error) {
+        const errorMessage = data.details || data.error || 'Unknown error occurred';
+        console.error('Team members fetch error:', errorMessage);
+        setError(`Failed to fetch team members: ${errorMessage}`);
+        return;
+      }
+      
+      setTeamMembers(data.map((member: { displayName: string }) => member.displayName));
+      setError(null);
+    } catch (error) {
+      console.error('Error fetching team members:', error);
+      setError('Failed to fetch team members. Please check your network connection and try again.');
     }
   }
 
