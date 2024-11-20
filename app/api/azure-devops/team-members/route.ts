@@ -20,12 +20,12 @@ export async function GET() {
   }
 
   try {
-    // First, get the project's teams
-    const teamsUrl = `https://dev.azure.com/${AZURE_DEVOPS_ORGANIZATION}/${AZURE_DEVOPS_PROJECT}/_apis/teams?api-version=7.1-preview.3`;
-    console.log('Fetching teams from URL:', teamsUrl);
+    // First, verify the project exists
+    const projectUrl = `https://dev.azure.com/${AZURE_DEVOPS_ORGANIZATION}/_apis/projects/${AZURE_DEVOPS_PROJECT}?api-version=7.1-preview.4`;
+    console.log('Verifying project at URL:', projectUrl);
 
-    const teamsResponse = await fetch(
-      teamsUrl,
+    const projectResponse = await fetch(
+      projectUrl,
       {
         headers: {
           'Authorization': `Basic ${Buffer.from(`:${AZURE_DEVOPS_PAT}`).toString('base64')}`,
@@ -34,56 +34,20 @@ export async function GET() {
       }
     );
 
-    if (!teamsResponse.ok) {
-      const errorText = await teamsResponse.text();
-      console.error('Azure DevOps API Error (Teams):', {
-        status: teamsResponse.status,
-        statusText: teamsResponse.statusText,
-        body: errorText
-      });
-      
-      // If we get a 404, try getting project info first
-      if (teamsResponse.status === 404) {
-        const projectUrl = `https://dev.azure.com/${AZURE_DEVOPS_ORGANIZATION}/_apis/projects/${AZURE_DEVOPS_PROJECT}?api-version=7.1-preview.4`;
-        console.log('Fetching project info from URL:', projectUrl);
-        
-        const projectResponse = await fetch(
-          projectUrl,
-          {
-            headers: {
-              'Authorization': `Basic ${Buffer.from(`:${AZURE_DEVOPS_PAT}`).toString('base64')}`,
-              'Accept': 'application/json'
-            },
-          }
-        );
-
-        if (!projectResponse.ok) {
-          const projectErrorText = await projectResponse.text();
-          throw new Error(`Project not found: ${projectResponse.status} ${projectResponse.statusText} - ${projectErrorText}`);
-        }
-
-        const projectData = await projectResponse.json();
-        throw new Error(`Project "${projectData.name}" found but teams endpoint failed: ${teamsResponse.status} ${teamsResponse.statusText}`);
-      }
-
-      throw new Error(`Teams request failed: ${teamsResponse.status} ${teamsResponse.statusText} - ${errorText}`);
+    if (!projectResponse.ok) {
+      const errorText = await projectResponse.text();
+      throw new Error(`Project not found: ${projectResponse.status} ${projectResponse.statusText} - ${errorText}`);
     }
 
-    const teamsData = await teamsResponse.json();
-    
-    // Get the project's default team
-    const defaultTeam = teamsData.value[0]; // Usually the first team is the default team
-    
-    if (!defaultTeam) {
-      throw new Error('No teams found in the project');
-    }
+    const projectData = await projectResponse.json();
+    console.log('Project found:', projectData.name);
 
-    // Now get the team members
-    const membersUrl = `https://dev.azure.com/${AZURE_DEVOPS_ORGANIZATION}/_apis/projects/${AZURE_DEVOPS_PROJECT}/teams/${defaultTeam.id}/members?api-version=7.1-preview.3`;
-    console.log('Fetching team members from URL:', membersUrl);
+    // Use Graph API to get project members
+    const graphUrl = `https://vssps.dev.azure.com/${AZURE_DEVOPS_ORGANIZATION}/_apis/graph/users?api-version=7.1-preview.1`;
+    console.log('Fetching users from Graph API:', graphUrl);
 
-    const teamMembersResponse = await fetch(
-      membersUrl,
+    const graphResponse = await fetch(
+      graphUrl,
       {
         headers: {
           'Authorization': `Basic ${Buffer.from(`:${AZURE_DEVOPS_PAT}`).toString('base64')}`,
@@ -92,22 +56,25 @@ export async function GET() {
       }
     );
 
-    if (!teamMembersResponse.ok) {
-      const errorText = await teamMembersResponse.text();
-      console.error('Azure DevOps API Error (Team Members):', {
-        status: teamMembersResponse.status,
-        statusText: teamMembersResponse.statusText,
-        body: errorText
-      });
-      throw new Error(`Team members request failed: ${teamMembersResponse.status} ${teamMembersResponse.statusText} - ${errorText}`);
+    if (!graphResponse.ok) {
+      const errorText = await graphResponse.text();
+      throw new Error(`Failed to fetch users: ${graphResponse.status} ${graphResponse.statusText} - ${errorText}`);
     }
 
-    const teamMembersData = await teamMembersResponse.json();
-    const teamMembers = teamMembersData.value.map((member: any) => ({
-      id: member.identity.id,
-      displayName: member.identity.displayName,
-      uniqueName: member.identity.uniqueName,
-    }));
+    const usersData = await graphResponse.json();
+    
+    // Filter out inactive users and map to required format
+    const teamMembers = usersData.value
+      .filter((user: any) => user.domain === 'aad' && !user.metaType && user.directoryAlias) // Only include active Azure AD users
+      .map((user: any) => ({
+        id: user.originId,
+        displayName: user.displayName,
+        uniqueName: user.mailAddress || user.principalName,
+      }));
+
+    if (teamMembers.length === 0) {
+      console.warn('No team members found in the organization');
+    }
 
     return NextResponse.json(teamMembers);
   } catch (error) {

@@ -126,61 +126,58 @@ export default function AzureDevOpsBugTracker() {
   const [teamMembers, setTeamMembers] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [organization, setOrganization] = useState('')
-  const [project, setProject] = useState('')
+  const [organization, setOrganization] = useState('lumel')
+  const [project, setProject] = useState('inforiver')
   const [pat, setPat] = useState('')
   const [isConfigured, setIsConfigured] = useState(false)
+  const [page, setPage] = useState(0)
+  const [totalBugs, setTotalBugs] = useState(0)
+  const pageSize = 50
 
   useEffect(() => {
     if (isConfigured) {
       fetchBugs()
       fetchTeamMembers()
     }
-  }, [isConfigured])
+  }, [isConfigured, page])
 
   const fetchBugs = async () => {
-    setIsLoading(true)
-    setError(null)
+    setIsLoading(true);
+    setError(null);
     try {
-      const response = await fetch(`https://dev.azure.com/${organization}/${project}/_apis/wit/wiql?api-version=6.0`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Basic ${btoa(`:${pat}`)}`,
-        },
-        body: JSON.stringify({
-          query: "Select [System.Id], [System.Title], [System.AssignedTo], [Microsoft.VSTS.Common.Priority], [System.State] From WorkItems Where [System.WorkItemType] = 'Bug' Order By [System.CreatedDate] Desc"
-        }),
-      })
-      if (!response.ok) throw new Error('Failed to fetch bugs')
-      const data = await response.json()
-      const bugIds = data.workItems.map((item: { id: number }) => item.id)
-      const bugDetails = await fetchBugDetails(bugIds)
-      setBugs(bugDetails)
-    } catch (err) {
-      setError('Failed to fetch bugs. Please check your configuration and try again.')
-      console.error('Error fetching bugs:', err)
+      const skip = page * pageSize;
+      const response = await fetch(`/api/azure-devops/bugs?skip=${skip}&take=${pageSize}`);
+      const data = await response.json();
+      
+      if (!response.ok || data.error) {
+        const errorMessage = data.details || data.error || 'Unknown error occurred';
+        console.error('Bug fetch error:', errorMessage);
+        setError(`Failed to fetch bugs: ${errorMessage}`);
+        return;
+      }
+      
+      setBugs(data.items);
+      setTotalBugs(data.total);
+      setError(null);
+    } catch (error) {
+      console.error('Error fetching bugs:', error);
+      setError('Failed to fetch bugs. Please check your network connection and try again.');
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
-  }
+  };
 
-  const fetchBugDetails = async (bugIds: number[]) => {
-    const response = await fetch(`https://dev.azure.com/${organization}/${project}/_apis/wit/workitems?ids=${bugIds.join(',')}&fields=System.Id,System.Title,System.AssignedTo,Microsoft.VSTS.Common.Priority,System.State&api-version=6.0`, {
-      headers: {
-        'Authorization': `Basic ${btoa(`:${pat}`)}`,
-      },
-    })
-    if (!response.ok) throw new Error('Failed to fetch bug details')
-    const data = await response.json()
-    return data.value.map((bug: any) => ({
-      id: bug.id,
-      title: bug.fields['System.Title'],
-      assignedTo: bug.fields['System.AssignedTo']?.displayName || 'Unassigned',
-      priority: bug.fields['Microsoft.VSTS.Common.Priority'],
-      state: bug.fields['System.State'],
-    }))
-  }
+  const handleNextPage = () => {
+    if ((page + 1) * pageSize < totalBugs) {
+      setPage(page + 1);
+    }
+  };
+
+  const handlePreviousPage = () => {
+    if (page > 0) {
+      setPage(page - 1);
+    }
+  };
 
   const fetchTeamMembers = async () => {
     try {
@@ -204,27 +201,26 @@ export default function AzureDevOpsBugTracker() {
 
   const handleReassign = async (bugId: number, newAssignee: string) => {
     try {
-      const response = await fetch(`https://dev.azure.com/${organization}/${project}/_apis/wit/workitems/${bugId}?api-version=6.0`, {
-        method: 'PATCH',
+      const response = await fetch(`/api/azure-devops/bugs/${bugId}/reassign`, {
+        method: 'POST',
         headers: {
-          'Content-Type': 'application/json-patch+json',
-          'Authorization': `Basic ${btoa(`:${pat}`)}`,
+          'Content-Type': 'application/json',
         },
-        body: JSON.stringify([
-          {
-            op: 'add',
-            path: '/fields/System.AssignedTo',
-            value: newAssignee
-          }
-        ]),
-      })
-      if (!response.ok) throw new Error('Failed to reassign bug')
-      await fetchBugs() // Refresh the bug list
-    } catch (err) {
-      console.error('Error reassigning bug:', err)
-      throw err
+        body: JSON.stringify({ newAssignee }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to reassign bug');
+      }
+
+      // Refresh bugs after reassignment
+      await fetchBugs();
+    } catch (error) {
+      console.error('Error reassigning bug:', error);
+      setError('Failed to reassign bug. Please try again.');
     }
-  }
+  };
 
   const handleConfigure = () => {
     if (organization && project && pat) {
@@ -264,18 +260,51 @@ export default function AzureDevOpsBugTracker() {
         <AlertCircle className="h-6 w-6" />
         Azure DevOps Bug Tracker
       </h1>
+      {error && (
+        <div className="flex items-center gap-2 text-red-500 mb-4">
+          <AlertCircle className="h-5 w-5" />
+          <span>{error}</span>
+        </div>
+      )}
+      
       {isLoading ? (
-        <div className="flex justify-center items-center h-64">
+        <div className="flex items-center justify-center p-8">
           <Loader2 className="h-8 w-8 animate-spin" />
         </div>
-      ) : error ? (
-        <div className="text-red-500">{error}</div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {bugs.map(bug => (
-            <BugCard key={bug.id} bug={bug} onReassign={handleReassign} teamMembers={teamMembers} />
-          ))}
-        </div>
+        <>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {bugs.map((bug) => (
+              <BugCard
+                key={bug.id}
+                bug={bug}
+                onReassign={handleReassign}
+                teamMembers={teamMembers}
+              />
+            ))}
+          </div>
+          
+          {/* Pagination controls */}
+          <div className="flex justify-between items-center mt-4">
+            <Button
+              variant="outline"
+              onClick={handlePreviousPage}
+              disabled={page === 0}
+            >
+              Previous
+            </Button>
+            <span>
+              Page {page + 1} of {Math.ceil(totalBugs / pageSize)}
+            </span>
+            <Button
+              variant="outline"
+              onClick={handleNextPage}
+              disabled={(page + 1) * pageSize >= totalBugs}
+            >
+              Next
+            </Button>
+          </div>
+        </>
       )}
     </div>
   )
